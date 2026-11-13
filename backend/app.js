@@ -1,16 +1,24 @@
-const express = require('express');
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
+
+const env = require("./config/env");
+const routes = require("./routes");
+const { notFound, errorHandler } = require("./middleware/errorHandler");
+
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Built-in middleware to parse incoming JSON payloads
+app.use(helmet());
+app.use(cors({ origin: env.CORS_ORIGIN }));
 app.use(express.json());
+app.use(morgan("dev"));
 
-// Root route handler
-app.get('/', (req, res) => {
-  res.send('Hello, Express!');
-});
+app.use("/api", routes);
 
-// Start the server
-app.listen(PORT, () => {
-  console.log(`Server is happily running on http://localhost:${PORT}`);
+app.use(notFound);
+app.use(errorHandler); // keep this last
+
+app.listen(env.PORT, () => {
+  console.log(`API running on http://localhost:${env.PORT}`);
 });
