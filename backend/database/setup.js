@@ -8,7 +8,7 @@ const db = require("../config/db");
 
 async function main() {
   await db.query(fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8"));
-  console.log("users table is ready");
+  console.log("tables are ready");
 
   if (env.NODE_ENV === "production") {
     console.log("Production: demo accounts were NOT created.");
