@@ -1,5 +1,6 @@
 const router = require("express").Router();
 const Event = require("../models/Event");
+const Registration = require("../models/Registration");
 const { verifyToken, authorizeRoles } = require("../middleware/auth");
 const httpError = require("../utils/httpError");
 
@@ -98,6 +99,38 @@ router.delete("/:id", ...adminOnly, async (req, res) => {
   checkId(req);
   if (!(await Event.remove(req.params.id))) throw httpError(404, "Event not found");
   res.status(204).end();
+});
+
+// What each Registration.register result means for the caller.
+const REGISTER_ERRORS = {
+  EVENT_NOT_FOUND: [404, "Event not found"],
+  EVENT_CANCELLED: [409, "This event has been cancelled"],
+  ALREADY_REGISTERED: [409, "You are already registered for this event"],
+  EVENT_FULL: [409, "This event is full"],
+};
+
+// POST /api/events/:id/register  (any logged-in user)
+router.post("/:id/register", verifyToken, async (req, res) => {
+  checkId(req);
+  const { result, registration } = await Registration.register(req.params.id, req.user.id);
+  if (result !== "OK") throw httpError(...REGISTER_ERRORS[result]);
+  res.status(201).json({ registration });
+});
+
+// DELETE /api/events/:id/register  (cancels your own registration)
+router.delete("/:id/register", verifyToken, async (req, res) => {
+  checkId(req);
+  if (!(await Registration.cancel(req.params.id, req.user.id))) {
+    throw httpError(404, "You are not registered for this event");
+  }
+  res.status(204).end();
+});
+
+// GET /api/events/:id/registrations  (ADMIN, SUPER_ADMIN)  Who is attending.
+router.get("/:id/registrations", ...adminOnly, async (req, res) => {
+  checkId(req);
+  if (!(await Event.findById(req.params.id))) throw httpError(404, "Event not found");
+  res.json({ registrations: await Registration.listForEvent(req.params.id) });
 });
 
 module.exports = router;

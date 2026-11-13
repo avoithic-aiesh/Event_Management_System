@@ -26,3 +26,11 @@ CREATE TABLE IF NOT EXISTS events (
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
   CHECK (ends_at > starts_at)
 );
+
+CREATE TABLE IF NOT EXISTS registrations (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id   UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  user_id    UUID NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (event_id, user_id) -- one registration per user per event
+);
