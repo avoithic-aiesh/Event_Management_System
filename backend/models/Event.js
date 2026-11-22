@@ -25,6 +25,10 @@ function fromRow(row) {
     startsAt: row.starts_at,
     endsAt: row.ends_at,
     capacity: row.capacity,
+        registeredCount:
+      row.registered_count === undefined
+        ? undefined
+        : Number(row.registered_count),
     status: row.status,
     createdBy: row.created_by,
     createdAt: row.created_at,
@@ -32,12 +36,25 @@ function fromRow(row) {
 }
 
 async function list() {
-  const { rows } = await db.query(`SELECT ${COLUMNS} FROM events ORDER BY starts_at ASC`);
+  const { rows } = await db.query(`SELECT ${COLUMNS},
+    (
+        SELECT COUNT(*)::int
+        FROM registrations r
+        WHERE r.event_id = events.id
+      ) AS registered_count
+    FROM events ORDER BY 
+    starts_at ASC`);
   return rows.map(fromRow);
 }
 
 async function findById(id) {
-  const { rows } = await db.query(`SELECT ${COLUMNS} FROM events WHERE id = $1`, [id]);
+  const { rows } = await db.query(`SELECT ${COLUMNS},
+    (
+          SELECT COUNT(*)::int
+          FROM registrations r
+          WHERE r.event_id = events.id
+        ) AS registered_count
+    FROM events WHERE id = $1`, [id]);
   return fromRow(rows[0]);
 }
 

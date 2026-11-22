@@ -19,12 +19,16 @@ async function register(eventId, userId) {
     await client.query("BEGIN");
 
     const { rows: events } = await client.query(
-      "SELECT capacity, status FROM events WHERE id = $1 FOR UPDATE",
+      "SELECT capacity, status, ends_at FROM events WHERE id = $1 FOR UPDATE",
       [eventId]
     );
     const event = events[0];
     if (!event) return await finish(client, "EVENT_NOT_FOUND");
     if (event.status !== "PUBLISHED") return await finish(client, "EVENT_CANCELLED");
+
+    if (new Date(event.ends_at).getTime() <= Date.now()) {
+      return await finish(client, "EVENT_ENDED");
+    }
 
     const { rows: existing } = await client.query(
       "SELECT 1 FROM registrations WHERE event_id = $1 AND user_id = $2",
