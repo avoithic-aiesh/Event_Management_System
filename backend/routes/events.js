@@ -105,8 +105,10 @@ router.delete("/:id", ...adminOnly, async (req, res) => {
 const REGISTER_ERRORS = {
   EVENT_NOT_FOUND: [404, "Event not found"],
   EVENT_CANCELLED: [409, "This event has been cancelled"],
+  EVENT_ENDED: [409, "This event has already ended"],
   ALREADY_REGISTERED: [409, "You are already registered for this event"],
   EVENT_FULL: [409, "This event is full"],
+
 };
 
 // POST /api/events/:id/register  (any logged-in user)
