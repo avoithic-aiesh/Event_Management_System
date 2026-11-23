@@ -6,6 +6,8 @@ function fromRow(row) {
     eventId: row.event_id,
     userId: row.user_id,
     createdAt: row.created_at,
+    attended: row.attended === true,
+    attendedAt: row.attended_at ?? null,
   };
 }
 
@@ -44,7 +46,7 @@ async function register(eventId, userId) {
     if (counts[0].taken >= event.capacity) return await finish(client, "EVENT_FULL");
 
     const { rows } = await client.query(
-      "INSERT INTO registrations (event_id, user_id) VALUES ($1, $2) RETURNING id, event_id, user_id, created_at",
+      "INSERT INTO registrations (event_id, user_id) VALUES ($1, $2) RETURNING id, event_id, user_id, created_at, attended, attended_at",
       [eventId, userId]
     );
     await client.query("COMMIT");
@@ -72,10 +74,26 @@ async function cancel(eventId, userId) {
   return rowCount > 0;
 }
 
+// Marks (or un-marks) attendance for one registration. The event id is part of
+// the lookup so a registration cannot be changed through a different event.
+// Returns the updated registration, or null if no such registration exists.
+async function setAttendance(registrationId, eventId, attended) {
+  const { rows } = await db.query(
+    `UPDATE registrations
+     SET attended = $1,
+         attended_at = CASE WHEN $1 THEN now() ELSE NULL END
+     WHERE id = $2 AND event_id = $3
+     RETURNING id, event_id, user_id, created_at, attended, attended_at`,
+    [attended, registrationId, eventId]
+  );
+  return rows[0] ? fromRow(rows[0]) : null;
+}
+
 // The events a user has registered for, soonest first.
 async function listForUser(userId) {
   const { rows } = await db.query(
-    `SELECT r.id, r.created_at, e.id AS event_id, e.title, e.venue, e.starts_at, e.ends_at, e.status
+    `SELECT r.id, r.created_at, r.attended, r.attended_at,
+            e.id AS event_id, e.title, e.venue, e.starts_at, e.ends_at, e.status
      FROM registrations r
      JOIN events e ON e.id = r.event_id
      WHERE r.user_id = $1
@@ -85,6 +103,8 @@ async function listForUser(userId) {
   return rows.map((row) => ({
     id: row.id,
     registeredAt: row.created_at,
+    attended: row.attended === true,
+    attendedAt: row.attended_at ?? null,
     event: {
       id: row.event_id,
       title: row.title,
@@ -99,7 +119,8 @@ async function listForUser(userId) {
 // Everyone registered for an event, in the order they signed up.
 async function listForEvent(eventId) {
   const { rows } = await db.query(
-    `SELECT r.id, r.created_at, u.id AS user_id, u.full_name, u.email
+    `SELECT r.id, r.created_at, r.attended, r.attended_at,
+            u.id AS user_id, u.full_name, u.email
      FROM registrations r
      JOIN users u ON u.id = r.user_id
      WHERE r.event_id = $1
@@ -109,8 +130,10 @@ async function listForEvent(eventId) {
   return rows.map((row) => ({
     id: row.id,
     registeredAt: row.created_at,
+    attended: row.attended === true,
+    attendedAt: row.attended_at ?? null,
     user: { id: row.user_id, fullName: row.full_name, email: row.email },
   }));
 }
 
-module.exports = { register, cancel, listForUser, listForEvent };
+module.exports = { register, cancel, setAttendance, listForUser, listForEvent };

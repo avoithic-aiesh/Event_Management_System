@@ -18,6 +18,10 @@ function checkId(req) {
   if (!UUID_RE.test(req.params.id)) throw httpError(400, "Invalid event id");
 }
 
+function checkRegistrationId(req) {
+  if (!UUID_RE.test(req.params.registrationId)) throw httpError(400, "Invalid registration id");
+}
+
 function parseDate(value, name) {
   const date = typeof value === "string" ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) throw httpError(400, `${name} must be a valid date`);
@@ -232,6 +236,25 @@ router.get("/:id/registrations", ...adminOnly, async (req, res) => {
   checkId(req);
   if (!(await Event.findById(req.params.id))) throw httpError(404, "Event not found");
   res.json({ registrations: await Registration.listForEvent(req.params.id) });
+});
+
+// PATCH /api/events/:id/registrations/:registrationId  { attended: true }  (ADMIN, SUPER_ADMIN)
+router.patch("/:id/registrations/:registrationId", ...adminOnly, async (req, res) => {
+  checkId(req);
+  checkRegistrationId(req);
+  const attended = (req.body || {}).attended;
+  if (typeof attended !== "boolean") {
+    throw httpError(400, "attended must be true or false");
+  }
+  if (!(await Event.findById(req.params.id))) throw httpError(404, "Event not found");
+
+  const registration = await Registration.setAttendance(
+    req.params.registrationId,
+    req.params.id,
+    attended
+  );
+  if (!registration) throw httpError(404, "Registration not found");
+  res.json({ registration });
 });
 
 module.exports = router;

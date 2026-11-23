@@ -28,10 +28,12 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE TABLE IF NOT EXISTS registrations (
-  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  event_id   UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-  user_id    UUID NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id    UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  user_id     UUID NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  attended    BOOLEAN     NOT NULL DEFAULT false,
+  attended_at TIMESTAMPTZ,
   UNIQUE (event_id, user_id) -- one registration per user per event
 );
 
@@ -46,3 +48,7 @@ ALTER TABLE events ALTER COLUMN status SET DEFAULT 'DRAFT';
 ALTER TABLE events ADD COLUMN IF NOT EXISTS category  VARCHAR(50);
 ALTER TABLE events ADD COLUMN IF NOT EXISTS tags      TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE events ADD COLUMN IF NOT EXISTS image_url TEXT;
+
+-- Attendance columns for databases created before attendance tracking existed.
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS attended BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS attended_at TIMESTAMPTZ;
