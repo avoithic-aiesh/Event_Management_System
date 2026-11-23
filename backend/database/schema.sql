@@ -20,8 +20,8 @@ CREATE TABLE IF NOT EXISTS events (
   starts_at   TIMESTAMPTZ  NOT NULL,
   ends_at     TIMESTAMPTZ  NOT NULL,
   capacity    INTEGER      NOT NULL CHECK (capacity > 0),
-  status      VARCHAR(20)  NOT NULL DEFAULT 'PUBLISHED'
-              CHECK (status IN ('PUBLISHED', 'CANCELLED')),
+  status      VARCHAR(20)  NOT NULL DEFAULT 'DRAFT'
+              CHECK (status IN ('DRAFT', 'PUBLISHED', 'CANCELLED')),
   created_by  UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
   CHECK (ends_at > starts_at)
@@ -34,3 +34,15 @@ CREATE TABLE IF NOT EXISTS registrations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (event_id, user_id) -- one registration per user per event
 );
+
+-- Update block: applies to databases created before the DRAFT status and the
+-- event metadata columns existed. Every statement is safe to re-run.
+ALTER TABLE events DROP CONSTRAINT IF EXISTS events_status_check;
+ALTER TABLE events ADD CONSTRAINT events_status_check
+  CHECK (status IN ('DRAFT', 'PUBLISHED', 'CANCELLED'));
+
+ALTER TABLE events ALTER COLUMN status SET DEFAULT 'DRAFT';
+
+ALTER TABLE events ADD COLUMN IF NOT EXISTS category  VARCHAR(50);
+ALTER TABLE events ADD COLUMN IF NOT EXISTS tags      TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE events ADD COLUMN IF NOT EXISTS image_url TEXT;
