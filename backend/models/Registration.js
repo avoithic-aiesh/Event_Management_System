@@ -24,6 +24,7 @@ async function register(eventId, userId) {
     );
     const event = events[0];
     if (!event) return await finish(client, "EVENT_NOT_FOUND");
+    if (event.status === "DRAFT") return await finish(client, "EVENT_NOT_FOUND");
     if (event.status !== "PUBLISHED") return await finish(client, "EVENT_CANCELLED");
 
     if (new Date(event.ends_at).getTime() <= Date.now()) {

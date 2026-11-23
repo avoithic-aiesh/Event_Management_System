@@ -1,8 +1,17 @@
 const db = require("../config/db");
 
-const STATUSES = ["PUBLISHED", "CANCELLED"];
+const STATUSES = ["DRAFT", "PUBLISHED", "CANCELLED"];
 
-const COLUMNS = "id, title, description, venue, starts_at, ends_at, capacity, status, created_by, created_at";
+const COLUMNS = "id, title, description, venue, starts_at, ends_at, capacity, status, category, tags, image_url, created_by, created_at";
+
+// Reads also carry how many people are registered, which the routes need
+// for the capacity and draft rules.
+const READ_COLUMNS = `${COLUMNS},
+    (
+        SELECT COUNT(*)::int
+        FROM registrations r
+        WHERE r.event_id = events.id
+      ) AS registered_count`;
 
 // Fields an update may change, mapped to their column names.
 const UPDATABLE = {
@@ -13,6 +22,9 @@ const UPDATABLE = {
   endsAt: "ends_at",
   capacity: "capacity",
   status: "status",
+  category: "category",
+  tags: "tags",
+  imageUrl: "image_url",
 };
 
 function fromRow(row) {
@@ -25,46 +37,96 @@ function fromRow(row) {
     startsAt: row.starts_at,
     endsAt: row.ends_at,
     capacity: row.capacity,
-        registeredCount:
+    registeredCount:
       row.registered_count === undefined
         ? undefined
         : Number(row.registered_count),
     status: row.status,
+    category: row.category ?? null,
+    tags: row.tags ?? [],
+    imageUrl: row.image_url ?? null,
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
 }
 
-async function list() {
-  const { rows } = await db.query(`SELECT ${COLUMNS},
-    (
-        SELECT COUNT(*)::int
-        FROM registrations r
-        WHERE r.event_id = events.id
-      ) AS registered_count
-    FROM events ORDER BY 
-    starts_at ASC`);
-  return rows.map(fromRow);
+// %, _ and \ are wildcards in LIKE, so a literal search must escape them.
+function escapeLike(value) {
+  return value.replace(/[\\%_]/g, "\\$&");
 }
 
-async function findById(id) {
-  const { rows } = await db.query(`SELECT ${COLUMNS},
-    (
-          SELECT COUNT(*)::int
-          FROM registrations r
-          WHERE r.event_id = events.id
-        ) AS registered_count
-    FROM events WHERE id = $1`, [id]);
-  return fromRow(rows[0]);
-}
+// list({ onlyPublished, search, category, from, to, page, limit })
+// Returns { events, total }. `search` matches title OR venue, `category` is an
+// exact match, from/to bound starts_at. Paging applies only when `limit` is given.
+async function list({ onlyPublished = true, search, category, from, to, page, limit } = {}) {
+  const where = [];
+  const params = [];
 
-async function create({ title, description = "", venue, startsAt, endsAt, capacity, createdBy }) {
+  if (onlyPublished) where.push("status = 'PUBLISHED'");
+  if (search) {
+    params.push(`%${escapeLike(String(search))}%`);
+    where.push(`(title ILIKE $${params.length} OR venue ILIKE $${params.length})`);
+  }
+  if (category) {
+    params.push(category);
+    where.push(`category = $${params.length}`);
+  }
+  if (from) {
+    params.push(from);
+    where.push(`starts_at >= $${params.length}`);
+  }
+  if (to) {
+    params.push(to);
+    where.push(`starts_at <= $${params.length}`);
+  }
+
+  const whereSql = where.length ? ` WHERE ${where.join(" AND ")}` : "";
+
+  const counted = await db.query(`SELECT COUNT(*)::int AS total FROM events${whereSql}`, params);
+  const total = counted.rows[0].total;
+
+  const readParams = [...params];
+  let paging = "";
+  if (limit !== undefined && limit !== null) {
+    const currentPage = page && page > 0 ? page : 1;
+    readParams.push(limit, (currentPage - 1) * limit);
+    paging = ` LIMIT $${readParams.length - 1} OFFSET $${readParams.length}`;
+  }
+
   const { rows } = await db.query(
-    `INSERT INTO events (title, description, venue, starts_at, ends_at, capacity, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ${COLUMNS}`,
-    [title, description, venue, startsAt, endsAt, capacity, createdBy]
+    `SELECT ${READ_COLUMNS} FROM events${whereSql} ORDER BY starts_at ASC${paging}`,
+    readParams
   );
+  return { events: rows.map(fromRow), total };
+}
+
+// publicOnly hides drafts from visitors and members.
+async function findById(id, { publicOnly = false } = {}) {
+  let sql = `SELECT ${READ_COLUMNS} FROM events WHERE id = $1`;
+  if (publicOnly) sql += " AND status <> 'DRAFT'";
+  const { rows } = await db.query(sql, [id]);
   return fromRow(rows[0]);
+}
+
+async function create({
+  title,
+  description = "",
+  venue,
+  startsAt,
+  endsAt,
+  capacity,
+  status = "DRAFT",
+  category = null,
+  tags = [],
+  imageUrl = null,
+  createdBy,
+}) {
+  const { rows } = await db.query(
+    `INSERT INTO events (title, description, venue, starts_at, ends_at, capacity, status, category, tags, image_url, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+    [title, description, venue, startsAt, endsAt, capacity, status, category, tags, imageUrl, createdBy]
+  );
+  return findById(rows[0].id);
 }
 
 // Updates only the fields present in `changes`. Unknown keys are ignored.
@@ -73,11 +135,11 @@ async function update(id, changes) {
   if (keys.length === 0) return findById(id);
 
   const sets = keys.map((key, i) => `${UPDATABLE[key]} = $${i + 2}`).join(", ");
-  const { rows } = await db.query(
-    `UPDATE events SET ${sets} WHERE id = $1 RETURNING ${COLUMNS}`,
+  await db.query(
+    `UPDATE events SET ${sets} WHERE id = $1`,
     [id, ...keys.map((key) => changes[key])]
   );
-  return fromRow(rows[0]);
+  return findById(id);
 }
 
 // Returns true if an event was deleted, false if the id did not exist.

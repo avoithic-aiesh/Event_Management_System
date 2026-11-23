@@ -25,6 +25,26 @@ async function verifyToken(req, _res, next) {
   next();
 }
 
+// Same as verifyToken, but a missing, invalid or expired token is ignored
+// instead of rejected, so the handler can treat the caller as a visitor.
+// Used by GET /api/events/:id, which answers differently for admins.
+async function optionalAuth(req, _res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return next();
+
+  let payload;
+  try {
+    payload = jwt.verify(token, env.JWT_SECRET);
+  } catch {
+    return next();
+  }
+
+  const user = await User.findById(payload.sub);
+  if (user && user.status === "ACTIVE") req.user = user;
+  next();
+}
+
 // Step 2: are you allowed? Use after verifyToken.
 // Example: router.get("/", verifyToken, authorizeRoles("ADMIN", "SUPER_ADMIN"), handler);
 function authorizeRoles(...allowedRoles) {
@@ -36,4 +56,4 @@ function authorizeRoles(...allowedRoles) {
   };
 }
 
-module.exports = { verifyToken, authorizeRoles };
+module.exports = { verifyToken, optionalAuth, authorizeRoles };
