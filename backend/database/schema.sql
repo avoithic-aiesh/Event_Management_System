@@ -37,6 +37,20 @@ CREATE TABLE IF NOT EXISTS registrations (
   UNIQUE (event_id, user_id) -- one registration per user per event
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_id   UUID REFERENCES events(id) ON DELETE SET NULL,
+  message    TEXT NOT NULL,
+  is_read    BOOLEAN NOT NULL DEFAULT false,
+  read_at    TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Speeds up "my notifications, newest first" and unread counting.
+CREATE INDEX IF NOT EXISTS notifications_user_created_idx
+  ON notifications (user_id, created_at DESC);
+
 -- Update block: applies to databases created before the DRAFT status and the
 -- event metadata columns existed. Every statement is safe to re-run.
 ALTER TABLE events DROP CONSTRAINT IF EXISTS events_status_check;
