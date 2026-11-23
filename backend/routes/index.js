@@ -5,5 +5,6 @@ router.use("/auth", require("./auth"));
 router.use("/users", require("./users"));
 router.use("/events", require("./events"));
 router.use("/registrations", require("./registrations"));
+router.use("/notifications", require("./notifications"));
 
 module.exports = router;
