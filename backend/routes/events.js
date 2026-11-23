@@ -1,14 +1,25 @@
 const router = require("express").Router();
 const Event = require("../models/Event");
 const Registration = require("../models/Registration");
-const { verifyToken, authorizeRoles } = require("../middleware/auth");
+const { verifyToken, optionalAuth, authorizeRoles } = require("../middleware/auth");
 const httpError = require("../utils/httpError");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const adminOnly = [verifyToken, authorizeRoles("ADMIN", "SUPER_ADMIN")];
 
+// Which statuses an event may be moved to from the one it is in now.
+const MOVES = {
+  DRAFT: ["PUBLISHED", "CANCELLED"],
+  PUBLISHED: ["DRAFT", "CANCELLED"],
+  CANCELLED: ["PUBLISHED"],
+};
+
 function checkId(req) {
   if (!UUID_RE.test(req.params.id)) throw httpError(400, "Invalid event id");
+}
+
+function checkRegistrationId(req) {
+  if (!UUID_RE.test(req.params.registrationId)) throw httpError(400, "Invalid registration id");
 }
 
 function parseDate(value, name) {
@@ -54,25 +65,97 @@ function validate(body, requireAll) {
     }
     out.status = body.status;
   }
+  if (sent("category")) {
+    if (body.category !== null && (typeof body.category !== "string" || body.category.length > 50)) {
+      throw httpError(400, "Category must be text of up to 50 characters");
+    }
+    out.category = body.category;
+  }
+  if (sent("tags")) {
+    const ok =
+      Array.isArray(body.tags) &&
+      body.tags.length <= 10 &&
+      body.tags.every((tag) => typeof tag === "string" && tag.trim() && tag.trim().length <= 30);
+    if (!ok) throw httpError(400, "Tags must be a list of up to 10 short texts");
+    out.tags = body.tags.map((tag) => tag.trim());
+  }
+  if (sent("imageUrl")) {
+    const value = body.imageUrl;
+    const ok =
+      value === null ||
+      value === "" ||
+      (typeof value === "string" && value.length <= 500 && /^https?:\/\//i.test(value));
+    if (!ok) throw httpError(400, "Image must be an http(s) link");
+    out.imageUrl = value === "" ? null : value;
+  }
   return out;
 }
 
-// GET /api/events  (public)
-router.get("/", async (_req, res) => {
-  res.json({ events: await Event.list() });
+// search, category, from/to and paging for GET /api/events and /admin/all.
+// Paging is only used when page or limit was sent.
+function listOptions(req) {
+  const { search, category, from, to, page, limit } = req.query;
+  const options = {};
+
+  if (search !== undefined) options.search = String(search);
+  if (category !== undefined) options.category = String(category);
+  if (from !== undefined) options.from = parseDate(from, "from");
+  if (to !== undefined) options.to = parseDate(to, "to");
+
+  if (page !== undefined || limit !== undefined) {
+    const pageNum = page === undefined ? 1 : Number(page);
+    const limitNum = limit === undefined ? 20 : Number(limit);
+    if (!Number.isInteger(pageNum) || pageNum < 1) {
+      throw httpError(400, "page must be a whole number of 1 or more");
+    }
+    if (!Number.isInteger(limitNum) || limitNum < 1 || limitNum > 50) {
+      throw httpError(400, "limit must be a whole number between 1 and 50");
+    }
+    options.page = pageNum;
+    options.limit = limitNum;
+  }
+  return options;
+}
+
+// { events, total }, plus page and limit when paging was used.
+async function sendList(res, options) {
+  const { events, total } = await Event.list(options);
+  const body = { events, total };
+  if (options.limit !== undefined) {
+    body.page = options.page;
+    body.limit = options.limit;
+  }
+  res.json(body);
+}
+
+// GET /api/events  (public)  Published events only, earliest first.
+router.get("/", async (req, res) => {
+  await sendList(res, listOptions(req));
 });
 
-// GET /api/events/:id  (public)
-router.get("/:id", async (req, res) => {
+// GET /api/events/admin/all  (ADMIN, SUPER_ADMIN)  Drafts and cancelled too.
+// Declared before /:id so "admin" is never read as an event id.
+router.get("/admin/all", ...adminOnly, async (req, res) => {
+  await sendList(res, { ...listOptions(req), onlyPublished: false });
+});
+
+// GET /api/events/:id  (public)  Drafts are 404 unless an admin asks.
+router.get("/:id", optionalAuth, async (req, res) => {
   checkId(req);
-  const event = await Event.findById(req.params.id);
+  const isAdmin = req.user && (req.user.role === "ADMIN" || req.user.role === "SUPER_ADMIN");
+  const event = await Event.findById(req.params.id, { publicOnly: !isAdmin });
   if (!event) throw httpError(404, "Event not found");
   res.json({ event });
 });
 
-// POST /api/events  { title, description?, venue, startsAt, endsAt, capacity }  (ADMIN, SUPER_ADMIN)
+// POST /api/events  { title, description?, venue, startsAt, endsAt, capacity, status?, category?, tags?, imageUrl? }  (ADMIN, SUPER_ADMIN)
 router.post("/", ...adminOnly, async (req, res) => {
-  const data = validate(req.body || {}, true);
+  const body = req.body || {};
+  if (body.status !== undefined && body.status !== "DRAFT" && body.status !== "PUBLISHED") {
+    throw httpError(400, "New events can only be created as DRAFT or PUBLISHED");
+  }
+
+  const data = validate(body, true);
   if (data.endsAt <= data.startsAt) throw httpError(400, "endsAt must be after startsAt");
 
   const event = await Event.create({ ...data, createdBy: req.user.id });
@@ -91,13 +174,33 @@ router.patch("/:id", ...adminOnly, async (req, res) => {
   const endsAt = changes.endsAt || current.endsAt;
   if (endsAt <= startsAt) throw httpError(400, "endsAt must be after startsAt");
 
+  const registered = current.registeredCount || 0;
+
+  if (changes.status && changes.status !== current.status) {
+    if (!(MOVES[current.status] || []).includes(changes.status)) {
+      throw httpError(409, `Cannot move an event from ${current.status} to ${changes.status}`);
+    }
+    if (changes.status === "DRAFT" && registered > 0) {
+      throw httpError(409, "This event has registrations. Cancel it instead of moving it back to draft");
+    }
+  }
+
+  if (changes.capacity !== undefined && changes.capacity < registered) {
+    throw httpError(409, `${registered} people are already registered, so capacity cannot be lower`);
+  }
+
   res.json({ event: await Event.update(req.params.id, changes) });
 });
 
-// DELETE /api/events/:id  (ADMIN, SUPER_ADMIN)
+// DELETE /api/events/:id  (ADMIN, SUPER_ADMIN)  Drafts only.
 router.delete("/:id", ...adminOnly, async (req, res) => {
   checkId(req);
-  if (!(await Event.remove(req.params.id))) throw httpError(404, "Event not found");
+  const current = await Event.findById(req.params.id);
+  if (!current) throw httpError(404, "Event not found");
+  if (current.status !== "DRAFT") {
+    throw httpError(409, "Only draft events can be deleted. Cancel the event instead");
+  }
+  await Event.remove(req.params.id);
   res.status(204).end();
 });
 
@@ -105,8 +208,10 @@ router.delete("/:id", ...adminOnly, async (req, res) => {
 const REGISTER_ERRORS = {
   EVENT_NOT_FOUND: [404, "Event not found"],
   EVENT_CANCELLED: [409, "This event has been cancelled"],
+  EVENT_ENDED: [409, "This event has already ended"],
   ALREADY_REGISTERED: [409, "You are already registered for this event"],
   EVENT_FULL: [409, "This event is full"],
+
 };
 
 // POST /api/events/:id/register  (any logged-in user)
@@ -131,6 +236,25 @@ router.get("/:id/registrations", ...adminOnly, async (req, res) => {
   checkId(req);
   if (!(await Event.findById(req.params.id))) throw httpError(404, "Event not found");
   res.json({ registrations: await Registration.listForEvent(req.params.id) });
+});
+
+// PATCH /api/events/:id/registrations/:registrationId  { attended: true }  (ADMIN, SUPER_ADMIN)
+router.patch("/:id/registrations/:registrationId", ...adminOnly, async (req, res) => {
+  checkId(req);
+  checkRegistrationId(req);
+  const attended = (req.body || {}).attended;
+  if (typeof attended !== "boolean") {
+    throw httpError(400, "attended must be true or false");
+  }
+  if (!(await Event.findById(req.params.id))) throw httpError(404, "Event not found");
+
+  const registration = await Registration.setAttendance(
+    req.params.registrationId,
+    req.params.id,
+    attended
+  );
+  if (!registration) throw httpError(404, "Registration not found");
+  res.json({ registration });
 });
 
 module.exports = router;
