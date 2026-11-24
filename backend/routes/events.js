@@ -1,6 +1,7 @@
 const router = require("express").Router();
 const Event = require("../models/Event");
 const Registration = require("../models/Registration");
+const Notification = require("../models/Notification");
 const { verifyToken, optionalAuth, authorizeRoles } = require("../middleware/auth");
 const httpError = require("../utils/httpError");
 
@@ -219,6 +220,19 @@ router.post("/:id/register", verifyToken, async (req, res) => {
   checkId(req);
   const { result, registration } = await Registration.register(req.params.id, req.user.id);
   if (result !== "OK") throw httpError(...REGISTER_ERRORS[result]);
+
+  // The RSVP is already saved. A notification problem must never fail it.
+  try {
+    const event = await Event.findById(req.params.id);
+    await Notification.create({
+      userId: req.user.id,
+      eventId: req.params.id,
+      message: `You are registered for ${event ? event.title : "an event"}`,
+    });
+  } catch (err) {
+    console.warn("Could not create registration notification:", err.message);
+  }
+
   res.status(201).json({ registration });
 });
 
